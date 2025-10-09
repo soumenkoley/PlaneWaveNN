@@ -1,6 +1,6 @@
 def getSurfNN(ampOut, x, y, z, zCav, dsUnitVec):
-    """
-    Compute Newtonian Noise contribution from the outer surface.
+    
+    #Compute Newtonian Noise contribution from the outer surface.
     
     rVec = np.column_stack((x, y, z - zCav))
 
