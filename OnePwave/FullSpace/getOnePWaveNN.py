@@ -71,7 +71,7 @@ for f in fAll:
         r_nodes = np.column_stack((x, y, z))
         IVol = getVolNN(r_nodes, zCav, vP, f, thetaW, phiW)
 
-        IVolTot += np.sum(IVol * (r**2 * w)[:, None], axis=0)
+        IVolTot += np.sum(IVol * (r**2 * w)[:, None], axis=0) * wr
 
 # Surface 
         if i == len(rVec)-1:
