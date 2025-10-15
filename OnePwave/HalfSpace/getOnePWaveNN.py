@@ -82,13 +82,13 @@ for f_idx, f in enumerate(fAll):
         wr = wR[i]
 
         # Volume vectorized
-        IVol = get_vol_nn(r_nodes, zCav, vP, f, 90, 0)
+        IVol = getVolNN(r_nodes, zCav, vP, f, 90, 0)
         IVolTot += np.sum(IVol * (r**2 * w)[:, None], axis=0) * wr
 
         # Surface integral 
         if i == nR-1:
             ampOut = getPWaveAmp(x, y, z, vP, f, 90, 0)
-            ISurf = get_surf_nn(ampOut, x, y, z, zCav, dsUnitVec)
+            ISurf = getSurfNN(ampOut, x, y, z, zCav, dsUnitVec)
             ISurfTot = np.sum(ISurf * weights_surface, axis=0)
 
     IVolTotAll[f_idx] = IVolTot
