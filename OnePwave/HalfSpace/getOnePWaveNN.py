@@ -1,120 +1,118 @@
-fAll = np.arange(2, 7.01, 0.2)
-nTheta = 100
-nPhi = 500
-rCav = 20
-zCav = -250
-vP = 4000
-rho = 2800
+fAll = np.arange(2, 7.01, 0.2)  # Hz
+R = 8000                        # outer radius (m)
+rCav, zCav = 20, -250          # cavity position (below surface)
+thetaW, phiW = 90, 0
+vP, rho = 4000, 2800
 G = 6.67430e-11
-r1, r2 = rCav, 8000
+r1, r2 = rCav, R
 
 
-bounds = [0, -zCav - 2*rCav, -zCav + 2*rCav, r2]
-pointsPerRegion = [30, 30, 240]
+f_max = fAll.max()
+nR, nTheta, nPhi, grid_info = compgrid(R, vP, f_max)
+print(f"\n--- Grid resolution (Half-space) ---")
+print(f"nR={nR}, nTheta={nTheta}, nPhi={nPhi}")
+print(f"λ = {grid_info['lambda']:.2f} m, target step ≈ {grid_info['target_step_m']:.2f} m")
 
-rVec = np.array([])
-wR = np.array([])
-for i in range(3):
-    r_sub, w_sub = lgwt(pointsPerRegion[i], bounds[i], bounds[i+1])
-    rVec = np.concatenate((rVec, r_sub))
-    wR = np.concatenate((wR, w_sub))
+# region setup (finer near the cavity)
+bounds = [0, rCav, R]
+pointsPerRegion = [int(nR * 0.05), int(nR * 0.95)]  # 5% near cavity
 
-nR = len(rVec)
-nFreq = len(fAll)
+#radial
+rVec = np.concatenate([lgwt(pointsPerRegion[i], bounds[i], bounds[i+1])[0] for i in range(2)])
+wR = np.concatenate([lgwt(pointsPerRegion[i], bounds[i], bounds[i+1])[1] for i in range(2)])
 
-theta, wTheta = lgwt(nTheta, np.pi/2, np.pi)
+#angular
+theta, wTheta = lgwt(nTheta, 0, np.pi / 2)  # only downward directions
 phi = np.linspace(0, 2*np.pi, nPhi, endpoint=False)
 wPhi = 2*np.pi / nPhi
 
 TH, PH = np.meshgrid(theta, phi)
-thetaFlat = TH.ravel()
-phiFlat = PH.ravel()
-nPoints = len(thetaFlat)
+thetaFlat, phiFlat = TH.ravel(), PH.ravel()
 
-sinTheta = np.sin(thetaFlat)
-cosTheta = np.cos(thetaFlat)
-cosPhi = np.cos(phiFlat)
-sinPhi = np.sin(phiFlat)
+sinTheta, cosTheta = np.sin(thetaFlat), np.cos(thetaFlat)
+cosPhi, sinPhi = np.cos(phiFlat), np.sin(phiFlat)
+unitDirs = np.column_stack((sinTheta * cosPhi, sinTheta * sinPhi, cosTheta))
+
 wtTheta = np.tile(wTheta, nPhi)
 angularWeights = sinTheta * wtTheta * wPhi
 
-thetaPhi, weights = createSurfPoints(max(rVec), nTheta, nPhi)
-sThetaCPhi = np.sin(thetaPhi[:,0]) * np.cos(thetaPhi[:,1])
-sThetaSPhi = np.sin(thetaPhi[:,0]) * np.sin(thetaPhi[:,1])
-cTheta = np.cos(thetaPhi[:,0])
-dsUnitVec = np.column_stack((sThetaCPhi, sThetaSPhi, cTheta))
-
-x_all = rVec[:, None] * sinTheta * cosPhi
-y_all = rVec[:, None] * sinTheta * sinPhi
-z_all = rVec[:, None] * cosTheta
+x_all = rVec[:, None] * unitDirs[:, 0]
+y_all = rVec[:, None] * unitDirs[:, 1]
+z_all = rVec[:, None] * unitDirs[:, 2] + zCav  # shift by cavity depth
 
 cavity_mask = (x_all**2 + y_all**2 + (z_all - zCav)**2) < rCav**2
 
-angularWeights = angularWeights[None, :]  # shape 1 x nPoints
-weights_surface = weights[:, None]        # shape nPoints x 1
+# --- Surface points 
+thetaPhi, weights = createSurfPoints(max(rVec), nTheta, nPhi,)
+sThetaCPhi = np.sin(thetaPhi[:, 0]) * np.cos(thetaPhi[:, 1])
+sThetaSPhi = np.sin(thetaPhi[:, 0]) * np.sin(thetaPhi[:, 1])
+cTheta = np.cos(thetaPhi[:, 0])
+dsUnitVec = np.column_stack((sThetaCPhi, sThetaSPhi, cTheta))
 
-IVolTotAll = np.zeros((nFreq, 3), dtype=complex)
-ISurfTotAll = np.zeros((nFreq, 3), dtype=complex)
-ITotAll = np.zeros((nFreq, 3), dtype=complex)
-volNNTheo = np.zeros(nFreq)
+IVolTotAll, ISurfTotAll, ITotAll, volNNTheo = [], [], [], []
 
-#Now loop over all vectorized frequencies
+for f in fAll:
+    k = 2 * np.pi * f / vP  # wavenumber
 
-for f_idx, f in enumerate(fAll):
-    lambda_f = vP / f
-    k = 2 * np.pi / lambda_f
-    kVec = k * np.array([np.sin(np.deg2rad(90)) * np.cos(np.deg2rad(0)),
-                         np.sin(np.deg2rad(90)) * np.sin(np.deg2rad(0)),
-                         np.cos(np.deg2rad(90))])
-    kUnitVec = kVec / np.linalg.norm(kVec)
+    # Volume integration (vectorized)
+    mask = ~cavity_mask
+    x, y, z = x_all[mask], y_all[mask], z_all[mask]
 
-    IVolTot = np.zeros(3, dtype=complex)
+    r_index, ang_index = np.divmod(np.flatnonzero(mask), unitDirs.shape[0])
+    r_vals = rVec[r_index]
+    wr_vals = wR[r_index]
+    w_ang = angularWeights[ang_index]
 
-    # and vectorized over all radii
-    for i in range(nR):
-        mask = ~cavity_mask[i,:]
-        x = x_all[i, mask]
-        y = y_all[i, mask]
-        z = z_all[i, mask]
-        r_nodes = np.column_stack((x, y, z))
-        w = angularWeights[0, mask]
-        r = rVec[i]
-        wr = wR[i]
+    r_nodes = np.column_stack((x, y, z))
+    IVol = getVolNN(r_nodes, zCav, vP, f, thetaW, phiW)
 
-        # Volume vectorized
-        IVol = getVolNN(r_nodes, zCav, vP, f, 90, 0)
-        IVolTot += np.sum(IVol * (r**2 * w)[:, None], axis=0) * wr
+    full_weights = (r_vals**2 * w_ang * wr_vals)[:, None]
+    IVolTot = np.sum(IVol * full_weights, axis=0)
 
-        # Surface integral 
-        if i == nR-1:
-            ampOut = getPWaveAmp(x, y, z, vP, f, 90, 0)
-            ISurf = getSurfNN(ampOut, x, y, z, zCav, dsUnitVec)
-            ISurfTot = np.sum(ISurf * weights_surface, axis=0)
+    # Surface integration 
+    outer_mask = ~cavity_mask[-1]
+    xS, yS, zS = x_all[-1, outer_mask], y_all[-1, outer_mask], z_all[-1, outer_mask]
+    dsUnitVecMask = dsUnitVec[outer_mask]
+    weightsMask = weights[outer_mask]
 
-    IVolTotAll[f_idx] = IVolTot
-    ISurfTotAll[f_idx] = ISurfTot
-    ITotAll[f_idx] = IVolTot - ISurfTot
+    ampOut = getPWaveAmp(xS, yS, zS, vP, f, thetaW, phiW)
+    ISurf = getSurfNN(ampOut, xS, yS, zS, zCav, dsUnitVecMask)
+    ISurfTot = np.sum(ISurf * weightsMask[:, None], axis=0)
+    
+    IVolTotAll.append(IVolTot)
+    ISurfTotAll.append(ISurfTot)
+    ITotAll.append(IVolTot - ISurfTot)
 
-    # Theoretical formula
-    kr1, kr2 = k*r1, k*r2
-    volNNTheo[f_idx] = (np.cos(kr2)/kr2**2 - np.sin(kr2)/kr2**3) - \
-                       (np.cos(kr1)/kr1**2 - np.sin(kr1)/kr1**3)
+    # Theoretical
+    kr1, kr2 = k * r1, k * r2
+    volNNTheo.append(
+        (np.cos(kr2)/kr2**2 - np.sin(kr2)/kr2**3)
+        - (np.cos(kr1)/kr1**2 - np.sin(kr1)/kr1**3)
+    )
 
-# --- Plot results ---
+# Convert to arrays
+IVolTotAll = np.array(IVolTotAll)
+ISurfTotAll = np.array(ISurfTotAll)
+ITotAll = np.array(ITotAll)
+volNNTheo = np.array(volNNTheo)
+
+#plot
 components = ['X', 'Y', 'Z']
-for idx in range(3):
-    plt.subplot(1,3,idx+1)
-    plt.plot(fAll, G*rho*np.abs(IVolTotAll[:,idx]), 'b', label='Volume contribution')
-    plt.plot(fAll, G*rho*np.abs(ISurfTotAll[:,idx]), 'r', label='Surface contribution')
-    plt.plot(fAll, G*rho*np.abs(ITotAll[:,idx]), 'm', label='Total')
-    plt.plot(fAll, 8*np.pi/3*G*rho*np.ones_like(fAll), 'k', label='8π/3Gρ')
-    plt.plot(fAll, 4*np.pi/3*G*rho*np.ones_like(fAll), 'g', label='4π/3Gρ')
-    plt.plot(fAll, 8*np.pi*G*rho*volNNTheo, 'ko', markerfacecolor='m', label='Theoretical')
-    plt.xlabel('Frequency (Hz)')
-    plt.ylabel('NN ASD (m/s^2/√Hz)')
-    plt.title(f'{components[idx]} component')
-    plt.legend()
-    plt.grid(True)
+fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+for idx, ax in enumerate(axes):
+    ax.plot(fAll, G*rho*np.abs(IVolTotAll[:, idx]), 'b', label='Volume contribution')
+    ax.plot(fAll, G*rho*np.abs(ISurfTotAll[:, idx]), 'r', label='Surface contribution')
+    ax.plot(fAll, G*rho*np.abs(ITotAll[:, idx]), 'm', label='Total')
+    ax.plot(fAll, 8*np.pi/3*G*rho*np.ones_like(fAll), 'k--', label='8π/3 Gρ (full-space)')
+    ax.plot(fAll, 4*np.pi/3*G*rho*np.ones_like(fAll), 'g--', label='4π/3 Gρ (half-space)')
+    ax.plot(fAll, 8*np.pi*G*rho*volNNTheo, 'mo', markerfacecolor='none', label='Theoretical')
+
+    ax.set_title(f'{components[idx]} Component (Half-space)')
+    ax.set_xlabel('Frequency (Hz)')
+    ax.set_ylabel('NN ASD (m/s²/√Hz)')
+    ax.legend()
+    ax.grid(True)
 
 plt.tight_layout()
 plt.show()
